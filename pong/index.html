@@ -1,0 +1,421 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Multiverse Pong V1.7 (Diagnostic)</title>
+    <style>
+        body {
+            background-color: #000;
+            color: #0f0;
+            font-family: monospace;
+            margin: 0;
+            padding: 0;
+            overflow: hidden;
+            user-select: none;
+        }
+        canvas {
+            display: block;
+            width: 100vw;
+            height: 100vh;
+            cursor: crosshair;
+        }
+        #ui-layer {
+            position: absolute;
+            top: 2vh;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            text-shadow: 2px 2px 4px #000;
+        }
+        h1 { margin: 0 0 10px 0; font-size: clamp(20px, 3vw, 32px); }
+        h2 { margin: 0; font-size: clamp(14px, 2vw, 20px); }
+        #errorLog { color: #ff3333; font-weight: bold; background: rgba(0,0,0,0.8); display: inline-block; padding: 5px; }
+        
+        .instructions {
+            position: absolute;
+            bottom: 0;
+            width: 100%;
+            text-align: center;
+            pointer-events: none;
+            background: linear-gradient(to top, rgba(0,0,0,1) 30%, rgba(0,0,0,0));
+            padding: 20px 10px 10px 10px;
+            box-sizing: border-box;
+            font-size: clamp(12px, 1.5vw, 16px);
+        }
+        .instructions p { margin: 5px 0; }
+        .highlight { color: #fff; font-weight: bold; background: #333; padding: 2px 6px; border-radius: 4px; }
+    </style>
+</head>
+<body>
+
+    <div id="ui-layer">
+        <h1>=== MULTIVERSE PONG V1.7 ===</h1>
+        <h2 id="scoreBoard">Booting Engine...</h2>
+        <div id="errorLog"></div>
+    </div>
+    
+    <canvas id="gameCanvas"></canvas>
+
+    <div class="instructions">
+        <p><strong>Controls:</strong> Click a chart to activate. Use <strong>Arrow Keys</strong> to move the paddle.</p>
+        <p><strong>Mechanics:</strong> Every successful hit speeds up the simulation. <span class="highlight">[</span> or <span class="highlight">]</span> adjusts base speed. <span class="highlight">F</span> toggles Fullscreen.</p>
+    </div>
+
+    <script>
+        // Wrapping the entire game in a master crash-catcher
+        try {
+            const canvas = document.getElementById("gameCanvas");
+            const ctx = canvas.getContext("2d");
+            const scoreBoard = document.getElementById("scoreBoard");
+            const errorLog = document.getElementById("errorLog");
+
+            let cellSize = 15; 
+            let offsetX = 0;
+            let offsetY = 0;
+            
+            let state = "MENU"; 
+            let score = 0;
+            let currentDim = 3;
+            
+            // --- BULLETPROOF DATA PARSING ---
+            function safeGetScore(key) {
+                try {
+                    let val = parseInt(window.localStorage.getItem(key));
+                    return isNaN(val) ? 0 : val;
+                } catch(e) { 
+                    return 0; 
+                }
+            }
+            
+            let highScore2D = safeGetScore("pongHigh2D");
+            let highScore3D = safeGetScore("pongHigh3D");
+            let highScore4D = safeGetScore("pongHigh4D");
+
+            // --- SMOOTH INPUT TRACKER ---
+            const keys = {};
+
+            let baseSpeed = 400;
+            let speedMs = baseSpeed; 
+            let lastTime = 0;
+            let accumulator = 0;
+
+            let activeChart = "";
+            let charts = {};
+
+            const maxX = 16, maxY = 10, maxZ = 10, maxW = 10;
+            
+            let bx=0, by=0, bz=0, bw=0;
+            let vx=0, vy=0, vz=0, vw=0;
+            let padY=0, padZ=0, padW=0, padSize = 3;
+            let aiY=0;
+
+            function resizeCanvas() {
+                canvas.width = window.innerWidth || 800;
+                canvas.height = window.innerHeight || 600;
+                const maxCols = 64;
+                const maxRows = 32;
+                cellSize = Math.max(10, Math.floor(Math.min(canvas.width / maxCols, (canvas.height - 150) / maxRows)));
+                offsetX = Math.floor((canvas.width - (maxCols * cellSize)) / 2);
+                offsetY = Math.floor((canvas.height - (maxRows * cellSize)) / 2) + 40; 
+                if (state !== "MENU") render();
+            }
+            
+            let resizeTimeout;
+            window.addEventListener('resize', () => {
+                clearTimeout(resizeTimeout);
+                resizeTimeout = setTimeout(resizeCanvas, 100);
+            });
+
+            function initGame(dimensions) {
+                score = 0;
+                currentDim = dimensions;
+                speedMs = baseSpeed; 
+                bx = 8; by = 5; bz = 5; bw = 5;
+                vx = -1; vy = 1; vz = 1; vw = 1;
+                padY = 3; padZ = 3; padW = 3;
+                aiY = 3;
+                
+                if (dimensions === 2) {
+                    state = "PLAYING_2D";
+                    activeChart = "None (Coordinates Only)";
+                    charts = {}; 
+                } else if (dimensions === 3) {
+                    state = "PLAYING_3D";
+                    activeChart = "YZ Plane (Paddle)";
+                    charts = {
+                        "XY Plane (Depth/Height)": { x: 5, y: 2, w: maxX+2, h: maxY+2, type: "view" },
+                        "XZ Plane (Depth/Width)":  { x: 30, y: 2, w: maxX+2, h: maxZ+2, type: "view" },
+                        "YZ Plane (Paddle)":       { x: 18, y: 18, w: maxZ+2, h: maxY+2, type: "control", vAxis: "Y", hAxis: "Z" }
+                    };
+                } else if (dimensions === 4) {
+                    state = "PLAYING_4D";
+                    activeChart = "YZ Plane";
+                    charts = {
+                        "XY Plane (Depth/Height)": { x: 2, y: 2, w: maxX+2, h: maxY+2, type: "view" },
+                        "XZ Plane (Depth/Width)":  { x: 23, y: 2, w: maxX+2, h: maxZ+2, type: "view" },
+                        "XW Plane (Depth/Ana)":    { x: 44, y: 2, w: maxX+2, h: maxW+2, type: "view" },
+                        "YZ Plane": { x: 2, y: 18, w: maxZ+2, h: maxY+2, type: "control", vAxis: "Y", hAxis: "Z" },
+                        "YW Plane": { x: 23, y: 18, w: maxW+2, h: maxY+2, type: "control", vAxis: "Y", hAxis: "W" },
+                        "ZW Plane": { x: 44, y: 18, w: maxW+2, h: maxZ+2, type: "control", vAxis: "Z", hAxis: "W" }
+                    };
+                }
+            }
+
+            document.addEventListener("keydown", (e) => {
+                keys[e.code] = true;
+
+                if (e.key === "[") { speedMs = Math.min(1000, speedMs + 50); baseSpeed = speedMs; render(); }
+                if (e.key === "]") { speedMs = Math.max(30, speedMs - 50); baseSpeed = speedMs; render(); }
+
+                if (e.key.toLowerCase() === 'f') {
+                    if (!document.fullscreenElement) document.documentElement.requestFullscreen().catch(err => console.log(err));
+                    else document.exitFullscreen();
+                }
+
+                if (state === "GAMEOVER") {
+                    if (e.key.toLowerCase() === 'r' || e.key === 'Enter') { initGame(currentDim); return; }
+                    if (e.key.toLowerCase() === 'm') { state = "MENU"; render(); return; }
+                }
+
+                if (state === "MENU" || state === "GAMEOVER") {
+                    if (e.key === '1') { initGame(2); return; }
+                    if (e.key === '2') { initGame(3); return; }
+                    if (e.key === '3') { initGame(4); return; }
+                }
+
+                if(["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].indexOf(e.code) > -1) { e.preventDefault(); }
+            });
+
+            document.addEventListener("keyup", (e) => { keys[e.code] = false; });
+
+            canvas.addEventListener("mousedown", (e) => {
+                if (state !== "PLAYING_3D" && state !== "PLAYING_4D") return;
+                const mouseX = Math.floor((e.clientX - offsetX) / cellSize);
+                const mouseY = Math.floor((e.clientY - offsetY) / cellSize);
+
+                for (const [name, bounds] of Object.entries(charts)) {
+                    if (mouseX >= bounds.x && mouseX <= bounds.x + bounds.w &&
+                        mouseY >= bounds.y && mouseY <= bounds.y + bounds.h) {
+                        activeChart = name;
+                        render(); 
+                    }
+                }
+            });
+
+            function processInput() {
+                if (state !== "PLAYING_2D" && state !== "PLAYING_3D" && state !== "PLAYING_4D") return;
+
+                if (state === "PLAYING_2D") {
+                    if (keys["ArrowUp"] && padY > 0) padY -= 0.1;
+                    if (keys["ArrowDown"] && padY < maxY - padSize) padY += 0.1;
+                } else {
+                    const chart = charts[activeChart];
+                    if (!chart || chart.type !== "control") return;
+
+                    const moveSpeed = 0.2; 
+                    if (keys["ArrowUp"]) {
+                        if (chart.vAxis === "Y" && padY > 0) padY -= moveSpeed;
+                        if (chart.vAxis === "Z" && padZ > 0) padZ -= moveSpeed;
+                    }
+                    if (keys["ArrowDown"]) {
+                        if (chart.vAxis === "Y" && padY < maxY - padSize) padY += moveSpeed;
+                        if (chart.vAxis === "Z" && padZ < maxZ - padSize) padZ += moveSpeed;
+                    }
+                    if (keys["ArrowLeft"]) {
+                        if (chart.hAxis === "Z" && padZ > 0) padZ -= moveSpeed;
+                        if (chart.hAxis === "W" && padW > 0) padW -= moveSpeed;
+                    }
+                    if (keys["ArrowRight"]) {
+                        if (chart.hAxis === "Z" && padZ < maxZ - padSize) padZ += moveSpeed;
+                        if (chart.hAxis === "W" && padW < maxW - padSize) padW += moveSpeed;
+                    }
+                }
+            }
+
+            function updatePhysics() {
+                if (state !== "PLAYING_2D" && state !== "PLAYING_3D" && state !== "PLAYING_4D") return;
+
+                bx += vx; by += vy;
+                if (state === "PLAYING_3D" || state === "PLAYING_4D") bz += vz;
+                if (state === "PLAYING_4D") bw += vw;
+
+                if (by <= 0 || by >= maxY) vy *= -1;
+                if ((state === "PLAYING_3D" || state === "PLAYING_4D") && (bz <= 0 || bz >= maxZ)) vz *= -1;
+                if (state === "PLAYING_4D" && (bw <= 0 || bw >= maxW)) vw *= -1;
+
+                if (bx >= maxX - 1) {
+                    vx *= -1;
+                    bx = maxX - 2;
+                    aiY = Math.max(0, Math.min(maxY - padSize, by - 1));
+                }
+
+                if (bx <= 1) {
+                    let hitY = (by >= Math.floor(padY) && by <= Math.floor(padY) + padSize);
+                    let hitZ = state === "PLAYING_2D" ? true : (bz >= Math.floor(padZ) && bz <= Math.floor(padZ) + padSize);
+                    let hitW = (state === "PLAYING_2D" || state === "PLAYING_3D") ? true : (bw >= Math.floor(padW) && bw <= Math.floor(padW) + padSize);
+
+                    if (hitY && hitZ && hitW) {
+                        vx *= -1; bx = 2; score++;
+                        speedMs = Math.max(40, speedMs * 0.98); 
+                    } else {
+                        try {
+                            if (currentDim === 2 && score > highScore2D) { highScore2D = score; window.localStorage.setItem("pongHigh2D", highScore2D); }
+                            if (currentDim === 3 && score > highScore3D) { highScore3D = score; window.localStorage.setItem("pongHigh3D", highScore3D); }
+                            if (currentDim === 4 && score > highScore4D) { highScore4D = score; window.localStorage.setItem("pongHigh4D", highScore4D); }
+                        } catch(e) {}
+                        state = "GAMEOVER";
+                    }
+                }
+            }
+
+            function drawText(text, gridX, gridY, color="#0f0", align="left") {
+                ctx.fillStyle = color;
+                ctx.font = `${Math.max(12, cellSize - 2)}px monospace`;
+                ctx.textAlign = align;
+                ctx.fillText(text, offsetX + (gridX * cellSize), offsetY + (gridY * cellSize));
+            }
+
+            function drawChar(char, gridX, gridY, color="#0f0") {
+                ctx.fillStyle = color;
+                ctx.font = `${Math.max(14, cellSize)}px monospace`;
+                ctx.textAlign = "left";
+                ctx.fillText(char, offsetX + (gridX * cellSize), offsetY + (gridY * cellSize));
+            }
+
+            function render() {
+                // Failsafe if canvas context failed to load
+                if (!ctx) return; 
+
+                ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+                let currentHigh = 0;
+                if (currentDim === 2) currentHigh = highScore2D;
+                if (currentDim === 3) currentHigh = highScore3D;
+                if (currentDim === 4) currentHigh = highScore4D;
+
+                let diff = Math.floor((1 - (speedMs/baseSpeed)) * 100);
+                if (isNaN(diff)) diff = 0;
+
+                if (state === "MENU") {
+                    scoreBoard.innerText = `MAIN MENU | 2D High: ${highScore2D} | 3D High: ${highScore3D} | 4D High: ${highScore4D}`;
+                    drawText("SELECT A GAME MODE", 32, 8, "#fff", "center");
+                    drawText("[1] Play 2D Text Pong (Coordinates Only)", 32, 11, "#0f0", "center");
+                    drawText("[2] Play 3D Pong (XY, XZ, YZ Charts)", 32, 13, "#0f0", "center");
+                    drawText("[3] Play 4D Pong (6-Chart Navigation)", 32, 15, "#0f0", "center");
+                    return;
+                }
+
+                if (state === "GAMEOVER") {
+                    scoreBoard.innerText = `GAME OVER! Final Score: ${score} | ${currentDim}D High: ${currentHigh}`;
+                    drawText("TRANSMISSION LOST", 32, 12, "#f00", "center");
+                    drawText("[R] or [Enter] to Restart Current Mode", 32, 15, "#fff", "center");
+                    drawText("[M] to Return to Main Menu", 32, 17, "#aaa", "center");
+                    drawText("Or press 1, 2, or 3 to jump to a specific dimension", 32, 20, "#555", "center");
+                    return;
+                }
+
+                scoreBoard.innerText = `Score: ${score} | High: ${currentHigh} | Velocity +${diff}% | ACTIVE: ${activeChart}`;
+
+                if (state === "PLAYING_2D") {
+                    drawText("=== 2D RAW TELEMETRY ===", 32, 10, "#fff", "center");
+                    drawText(`BALL  [X: ${bx.toString().padStart(2, ' ')} | Y: ${by.toString().padStart(2, ' ')}]`, 32, 13, "#0f0", "center");
+                    drawText(`PLAYER[Y: ${Math.floor(padY).toString().padStart(2, ' ')} to ${(Math.floor(padY) + padSize).toString().padStart(2, ' ')}]`, 32, 15, "#0a0", "center");
+                    drawText(`AI    [Y: ${Math.floor(aiY).toString().padStart(2, ' ')} to ${(Math.floor(aiY) + padSize).toString().padStart(2, ' ')}]`, 32, 16, "#f00", "center");
+                    drawText("Use UP and DOWN arrows to intercept", 32, 20, "#555", "center");
+                    return;
+                }
+
+                for (const [name, bounds] of Object.entries(charts)) {
+                    for (let y = bounds.y; y <= bounds.y + bounds.h; y++) {
+                        drawChar('*', bounds.x, y, "#333");
+                        drawChar('*', bounds.x + bounds.w, y, "#333");
+                    }
+                    for (let x = bounds.x + 1; x < bounds.x + bounds.w; x++) {
+                        drawChar('*', x, bounds.y, "#333");
+                        drawChar('*', x, bounds.y + bounds.h, "#333");
+                    }
+
+                    let title = name;
+                    if (name === activeChart) title += " [ACTIVE]";
+                    drawText(title, bounds.x + 1, bounds.y - 0.5, name === activeChart ? "#fff" : "#0a0");
+
+                    if (name.includes("XY")) drawChar('O', bounds.x + 1 + bx, bounds.y + 1 + by, "#fff");
+                    if (name.includes("XZ")) drawChar('O', bounds.x + 1 + bx, bounds.y + 1 + bz, "#fff");
+                    if (name.includes("XW")) drawChar('O', bounds.x + 1 + bx, bounds.y + 1 + bw, "#fff");
+
+                    if (name.includes("YZ")) {
+                        drawChar('O', bounds.x + 1 + bz, bounds.y + 1 + by, "#fff");
+                        for (let py = 0; py < padSize; py++) {
+                            for (let pz = 0; pz < padSize; pz++) {
+                                drawChar('#', bounds.x + 1 + Math.floor(padZ) + pz, bounds.y + 1 + Math.floor(padY) + py, "#0f0");
+                            }
+                        }
+                    }
+                    if (name.includes("YW")) {
+                        drawChar('O', bounds.x + 1 + bw, bounds.y + 1 + by, "#fff");
+                        for (let py = 0; py < padSize; py++) {
+                            for (let pw = 0; pw < padSize; pw++) {
+                                drawChar('#', bounds.x + 1 + Math.floor(padW) + pw, bounds.y + 1 + Math.floor(padY) + py, "#0f0");
+                            }
+                        }
+                    }
+                    if (name.includes("ZW")) {
+                        drawChar('O', bounds.x + 1 + bw, bounds.y + 1 + bz, "#fff");
+                        for (let pz = 0; pz < padSize; pz++) {
+                            for (let pw = 0; pw < padSize; pw++) {
+                                drawChar('#', bounds.x + 1 + Math.floor(padW) + pw, bounds.y + 1 + Math.floor(padZ) + pz, "#0f0");
+                            }
+                        }
+                    }
+                }
+            }
+
+            function gameLoop(timestamp) {
+                try {
+                    // Fallback if timestamp isn't provided by the browser
+                    if (!timestamp) timestamp = performance.now();
+                    
+                    if (!lastTime) lastTime = timestamp;
+                    let deltaTime = timestamp - lastTime;
+                    lastTime = timestamp;
+
+                    if (deltaTime > 250) deltaTime = 250;
+
+                    processInput();
+
+                    accumulator += deltaTime;
+                    let physicsUpdated = false;
+                    while (accumulator >= speedMs) {
+                        updatePhysics();
+                        accumulator -= speedMs;
+                        physicsUpdated = true;
+                    }
+
+                    if (state !== "MENU" && state !== "GAMEOVER") {
+                        render();
+                    } else if (physicsUpdated || state === "MENU" || state === "GAMEOVER") {
+                        render();
+                    }
+
+                    requestAnimationFrame(gameLoop);
+                } catch (loopError) {
+                    errorLog.innerText = "GAMELOOP CRASH: " + loopError.message;
+                }
+            }
+
+            // EXPLICIT BOOT SEQUENCE
+            resizeCanvas(); 
+            render(); // Force draw menu instantly before timers start
+            requestAnimationFrame(gameLoop);
+
+        } catch (bootError) {
+            // If the script crashes during setup, print it in red on the screen
+            document.getElementById("scoreBoard").innerText = "ENGINE FAILURE";
+            document.getElementById("errorLog").innerText = "CRASH LOG: " + bootError.message;
+            console.error(bootError);
+        }
+
+    </script>
+</body>
+</html>
