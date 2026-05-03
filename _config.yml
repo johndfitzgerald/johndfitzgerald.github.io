@@ -1,3 +1,8 @@
 title: John Fitzgerald's Sandbox
 description: Personal Sandbox for uncreative projects.
-theme: minima
+theme: Architect
+
+# This tells Jekyll to look for posts
+collections:
+  posts:
+    output: true
