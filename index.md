@@ -1,11 +1,16 @@
 ---
-layout: home
+layout: default
 ---
 
-Welcome! This is where I track my coding experiments and AI projects.
+# Welcome to my Sandbox
+Personal Sandbox for uncreative projects. Thanks for enjoying.
 
-### Featured Projects
+## Current Projects
 * [Multidimensional Pong (v1.7)](/pong/index.html) — *AI-generated code*
 
-
 ---
+
+## Recent Blog Posts
+{% for post in site.posts %}
+  * {{ post.date | date_to_string }} » [{{ post.title }}]({{ post.url }})
+{% endfor %}
