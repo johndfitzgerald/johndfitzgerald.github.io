@@ -1,6 +1,6 @@
-title: John Fitzgerald's Sandbox
-description: Personal Sandbox for uncreative projects.
-theme: Architect
+title: John Fitzgerald
+description: AI, Games, and Sandbox Projects
+theme: jekyll-theme-architect
 
 # This tells Jekyll to look for posts
 collections:
