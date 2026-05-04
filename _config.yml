@@ -6,3 +6,6 @@ theme: jekyll-theme-architect
 collections:
   posts:
     output: true
+    
+# Custom footer or variables
+kofi_id: johndfitzgerald
