@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>{{ page.title }}</title>
+  </head>
+  <body>
+    {{ content }}
+
+    <script src='https://storage.ko-fi.com/widget/scripts/overlay-widget.js'></script>
+    <script>
+      kofiWidgetOverlay.draw('johndfitzgerald', {
+        'type': 'floating-chat',
+        'floating-chat.donate.text': 'Support me',
+        'floating-chat.donate.background-color': '#00b9fe',
+        'floating-chat.donate.text-color': '#fff'
+      });
+    </script>
+  </body>
+</html>
